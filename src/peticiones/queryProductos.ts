@@ -4,41 +4,37 @@ import { Producto } from "../types/productos";
 
 const URL = import.meta.env.VITE_URL_DATOS || "http://localhost:8787/api";
 
-const fetchProductos = async (): Promise<Producto[]> => {
-    try {
+// Claves de consulta centralizadas
+const queryKeys = {
+    productos: ['productos'] as const
+};
+
+// Funciones de API extraídas
+const api = {
+    fetchProductos: async (): Promise<Producto[]> => {
         const response = await axios.get(`${URL}/tienda/productos`);
         return response.data;
-    } catch (error) {
-        console.error('Error fetching productos:', error);
-        throw error;
-    }
-};
+    },
 
-const addProducto = async (newProduct: Omit<Producto, 'id' | 'created_at'>): Promise<Producto> => {
-    try {
+    addProducto: async (newProduct: Omit<Producto, 'id' | 'created_at'>): Promise<Producto> => {
         const response = await axios.post(`${URL}/tienda/producto`, newProduct);
         return response.data;
-    } catch (error) {
-        console.error('Error adding product:', error);
-        throw error;
+    },
+
+    updateProducto: async (updatedProduct: Partial<Producto>) => {
+        const response = await axios.put(
+            `${URL}/tienda/producto/${updatedProduct.producto}`, 
+            updatedProduct
+        );
+        return response.data.message;
     }
 };
 
-const updateProducto = async (updatedProduct: Partial<Producto>) => {
-    try {
-        const response = await axios.put(`${URL}/tienda/producto/${updatedProduct.producto}`, updatedProduct);
-        console.log("response : ", response.data.message);
-        return response.data.message;    
-    } catch (error) {
-        console.error('Error updating product:', error);
-        throw error;
-    }
-};
-
+// Hooks
 export const useProductos = () => {
     return useQuery<Producto[], Error>({
-        queryKey: ['productos'],
-        queryFn: fetchProductos,
+        queryKey: queryKeys.productos,
+        queryFn: api.fetchProductos,
         staleTime: 1000 * 60 * 30,
     });
 };
@@ -47,9 +43,9 @@ export const useAddProducto = () => {
     const queryClient = useQueryClient();
     
     return useMutation<Producto, Error, Omit<Producto, 'id' | 'created_at'>>({
-        mutationFn: addProducto,
+        mutationFn: api.addProducto,
         onSuccess: (newProduct) => {
-            queryClient.setQueryData<Producto[]>(['productos'], (old = []) => [
+            queryClient.setQueryData<Producto[]>(queryKeys.productos, (old = []) => [
                 ...old,
                 newProduct
             ]);
@@ -61,9 +57,9 @@ export const useUpdateProducto = () => {
     const queryClient = useQueryClient();
 
     return useMutation({
-        mutationFn: updateProducto,
+        mutationFn: api.updateProducto,
         onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['productos'] });
+            queryClient.invalidateQueries({ queryKey: queryKeys.productos });
         },
     });
 };
@@ -71,29 +67,39 @@ export const useUpdateProducto = () => {
 export const useUpdateProductoCarrusel = () => {
     const queryClient = useQueryClient();
 
+    const optimisticUpdate = (
+        old: Producto[] = [], 
+        updatedProduct: Partial<Producto>
+    ): Producto[] => {
+        return old.map(product =>
+            product.id === updatedProduct.id
+                ? { ...product, ...updatedProduct }
+                : product
+        );
+    };
+
     return useMutation({
-        mutationFn: updateProducto,
+        mutationFn: api.updateProducto,
         onMutate: async (updatedProduct: Partial<Producto>) => {
-            await queryClient.cancelQueries({ queryKey: ['productos'] });
-            const previousProductos = queryClient.getQueryData<Producto[]>(['productos']);
+            await queryClient.cancelQueries({ queryKey: queryKeys.productos });
+            const previousProductos = queryClient.getQueryData<Producto[]>(queryKeys.productos);
 
             if (previousProductos && updatedProduct.id) {
-                queryClient.setQueryData<Producto[]>(['productos'], (old) => {
-                    if (!old) return [];
-                    return old.map(product =>
-                        product.id === updatedProduct.id
-                            ? { ...product, ...updatedProduct }
-                            : product
-                    );
-                });
+                queryClient.setQueryData<Producto[]>(
+                    queryKeys.productos,
+                    (old) => optimisticUpdate(old, updatedProduct)
+                );
             }
 
             return { previousProductos };
         },
-        onError: (err, updatedProduct, context) => {
+        onError: (_, __, context) => {
             if (context?.previousProductos) {
-                queryClient.setQueryData(['productos'], context.previousProductos);
+                queryClient.setQueryData(queryKeys.productos, context.previousProductos);
             }
         },
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: queryKeys.productos });
+        }
     });
 };
